@@ -1,0 +1,11 @@
+This commit we realised the error in our approach, which was presumably giving the amazing results.
+
+For a session of items [i_1 to i_n] we were passing [i_1 to i_n-1] to encoder as source and [i_2 to i_n] to decoder as target.
+This approach is wrong.
+In language translation tasks, it works due to both inputs being different languages.
+But in language generation, this shifting approach is wrong.
+During prediction, decoder will already know the correct outputs from the encoder input because it's the same sequence but shifted.
+
+Putting this checkpoint here for future reference.
+
+Pragun Saini
