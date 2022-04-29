@@ -11,7 +11,7 @@ from utils import load_pickle
 
 
 class DataHandler():
-    def __init__(self, data_path, batch_size=64, n_friends=10, device='cpu'):
+    def __init__(self, data_path, batch_size=64, n_friends=10, limit_friend_sesscnt=20, limit_hist_sesscnt=20, device='cpu'):
         print(f'Loading dataset from {data_path}')
         stime = time.time()
         self.device = device
@@ -26,6 +26,8 @@ class DataHandler():
         user_set = set(trainset.keys())
         self.num_users = len(trainset)
         self.n_friends = min(n_friends, self.num_users)
+        self.limit_friend_sesscnt = limit_friend_sesscnt
+        self.limit_hist_sesscnt = limit_hist_sesscnt
 
         assert min(user_set) == 0
         assert (max(user_set) + 1) == len(user_set)
@@ -69,7 +71,6 @@ class DataHandler():
 
         # max index of items is the padding item
         self.padding_item = int(padding_item)
-        self.start_token = self.padding_item + 1
         self.num_items = int(padding_item)
 
         if n_friends > 0:
@@ -138,6 +139,7 @@ class DataHandler():
                     prev_sess = torch.cat([self.train_data[user], self.test_data[user][:self.index_cur_session[user], :]], dim=0)
                 else:
                     prev_sess = self.train_data[user]
+            prev_sess = prev_sess[-self.limit_hist_sesscnt:]
             hist_sess.append(prev_sess)
 
             # friend sessions
@@ -145,7 +147,7 @@ class DataHandler():
                 friend_sess_item_list = []
                 for frd in self.user_similarity[user]:
                     if frd != user:
-                        friend_sess_item_list.append(self.train_data[frd])
+                        friend_sess_item_list.append(self.train_data[frd][-self.limit_friend_sesscnt:])
                 sess_itm_data = torch.cat((friend_sess_item_list), dim=0)
                 friend_sess.append(sess_itm_data)
 
@@ -156,21 +158,23 @@ class DataHandler():
         # Current Session
         cur_btch_size = len(batch_users)
         cur_sess = torch.cat(cur_sess).view(len(batch_users), -1)
-        cur_sess_len = np.array(cur_sess_len)
+        cur_sess_len = torch.tensor(cur_sess_len)
         X, y = cur_sess[:, :-1], cur_sess[:, 1:]
         X = X.to(self.device)
-        y_input = torch.column_stack((torch.full((cur_btch_size,), self.start_token).to(self.device), y[:, :-1])).to(self.device)
-        y_expected = y.to(self.device)
-        target_mask = self.get_target_mask(y_input.size(1)).to(self.device)
-        target_key_mask = self.create_pad_mask_by_len(y_input, cur_sess_len).to(self.device)
-        src_key_mask = self.create_pad_mask_by_len(X, cur_sess_len).to(self.device)
+        y = y.to(self.device)
+        target_mask = self.get_target_mask(X.size(1)).to(self.device)
+        target_key_mask = self.create_pad_mask_by_len(X, cur_sess_len).to(self.device)
 
         # Hist Session
         hist_sizes = torch.tensor([sess.size(0) for sess in hist_sess]).to(self.device)
         hist_sess = torch.cat(hist_sess, dim=0)
         hist_sess_key_mask = self.create_pad_mask(hist_sess, self.padding_item)
 
-        return batch_users, X, y_input, y_expected, src_key_mask, target_key_mask, target_mask, np.array(cur_sess_len), hist_sess, hist_sess_key_mask, hist_sizes, friend_sess
+        # Friend Session
+        friend_sizes = torch.tensor([sess.size(0) for sess in friend_sess]).to(self.device)
+        friend_sess = torch.cat(friend_sess, dim=0)
+        friend_sess_key_mask = self.create_pad_mask(friend_sess, self.padding_item)
+        return batch_users, X, y, target_key_mask, target_mask, cur_sess_len, hist_sess, hist_sess_key_mask, hist_sizes, friend_sess, friend_sess_key_mask, friend_sizes
 
 
     def get_next_train_batch(self):
@@ -198,4 +202,4 @@ class DataHandler():
 
 
     def create_pad_mask_by_len(self, matrix, seq_len):
-        return torch.arange(matrix.size(1)).repeat(matrix.size(0), 1) >= torch.tensor(seq_len).unsqueeze(1)
+        return torch.arange(matrix.size(1)).repeat(matrix.size(0), 1) >= seq_len.unsqueeze(1)

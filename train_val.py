@@ -16,14 +16,15 @@ def train_loop(model, opt, loss_fn, dataset):
     bar = progressbar.ProgressBar(max_value=num_batches)
 
     while True:
-        batch_users, X, y_input, y_expected, src_key_mask, target_key_mask, target_mask, cur_sess_len, hist_sess, hist_sess_key_mask, hist_sizes, frds_sess = dataset.get_next_train_batch()
+        batch_users, X, y, target_key_mask, target_mask, cur_sess_len, hist_sess, hist_sess_key_mask, hist_sizes, friend_sess, friend_sess_key_mask, friend_sizes\
+            = dataset.get_next_train_batch()
         c_batch_size = len(batch_users)
         if c_batch_size == 0:
             break
         
-        pred = model(X, y_input, target_mask=target_mask, src_pad_mask=src_key_mask, target_pad_mask=target_key_mask, hist_sess=hist_sess, hist_sess_pad_mask=hist_sess_key_mask, hist_sizes=hist_sizes)
+        pred = model(X, y, target_key_mask, target_mask, cur_sess_len, hist_sess, hist_sess_key_mask, hist_sizes, friend_sess, friend_sess_key_mask, friend_sizes)
         pred = pred.permute(1, 2, 0)
-        loss = loss_fn(pred, y_expected)
+        loss = loss_fn(pred, y)
 
         opt.zero_grad()
         loss.backward()
@@ -48,32 +49,20 @@ def validation_loop(model, loss_fn, evaluator, dataset):
     
     with torch.no_grad():
         while True:
-            batch_users, X, y_input, y_expected, src_key_mask, target_key_mask, target_mask, cur_sess_len, hist_sess, hist_sess_key_mask, hist_sizes, frds_sess = dataset.get_next_test_batch()
+            batch_users, X, y, target_key_mask, target_mask, cur_sess_len, hist_sess, hist_sess_key_mask, hist_sizes, friend_sess, friend_sess_key_mask, friend_sizes\
+                = dataset.get_next_test_batch()
             c_batch_size = len(batch_users)
             if c_batch_size == 0:
                 break
 
-            # For testing and inference we should not pass whole target to decoder,
-            # instead individually pass the output tokens
-            # no target mask required either
-            batch_size, seq_len = y_input.size(0), y_input.size(1)
-            y_test_input = torch.full((batch_size, 1), dataset.start_token).to(dataset.device)
-            final_preds = []
-            memory = None
-            for seq_iter in range(seq_len):
-                pred, memory = model(X, y_test_input, src_pad_mask=src_key_mask, memory=memory, hist_sess=hist_sess, hist_sess_pad_mask=hist_sess_key_mask, hist_sizes=hist_sizes)
-                pred = pred[-1, :, :].unsqueeze(0)
-                final_preds.append(pred)
-                # pred_items = torch.topk(pred, k=1)[1].view(-1, 1)
-                pred_items = torch.argmax(pred, dim=-1).view(-1, 1)
-                y_test_input = torch.cat((y_test_input, pred_items), 1)
-
-            pred = torch.cat(final_preds)
+            pred = model(X, y, target_key_mask, target_mask, cur_sess_len, hist_sess, hist_sess_key_mask, hist_sizes, friend_sess, friend_sess_key_mask, friend_sizes)
             pred = pred.permute(1, 2, 0)
-            loss = loss_fn(pred, y_expected)
+
+            loss = loss_fn(pred, y)
             losses.append(loss.detach().item())
+
             pred = pred.permute(0, 2, 1)
-            evaluator.evaluate_batch(pred, y_expected)
+            evaluator.evaluate_batch(pred, y)
 
             bar.update(batch_idx)
             batch_idx += 1
@@ -81,7 +70,7 @@ def validation_loop(model, loss_fn, evaluator, dataset):
     return np.mean(losses), evaluator.get_stats()
 
 
-def fit(model, opt, loss_fn, evaluator, dataset, epochs=5, checkpoints=True, checkpoint_name="", resume_from_checkpoint=None):
+def fit(model, opt, loss_fn, evaluator, dataset, epochs=5, checkpoints=True, checkpoint_name="", resume_from_checkpoint=None, scheduler=None):
     resume_from_epoch = 0
     if resume_from_checkpoint != None:
         checkpoint = torch.load(resume_from_checkpoint)
@@ -112,3 +101,6 @@ def fit(model, opt, loss_fn, evaluator, dataset, epochs=5, checkpoints=True, che
                 'eval_results': eval_results
             }, checkpoint_path)
             print(f"\nModel at Epoch {epoch} saved at {checkpoint_path}\n\n")
+        
+        if scheduler is not None:
+            scheduler.step(eval_loss)
