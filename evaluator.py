@@ -4,31 +4,28 @@ import torch
 
 
 class Evaluator(object):
-
-    def __init__(self, num_items, k_list=[5, 20], padding_idx=-1):
+    def __init__(self, num_items, k_list=[5, 20], masking_token=-1):
         self.num_items = num_items
         self.k_list = k_list
-        self.padding_idx=padding_idx
+        self.masking_token = masking_token
         self.initialize()
-
 
     def initialize(self):
         self.recall = []
         self.mrr = []
 
-
-    def evaluate_batch(self, predictions, targets):
+    def evaluate_batch(self, inputs, targets, predictions):
         """
+        inputs : [BATCH, SEQLEN]
         targets : [BATCH, SEQLEN]
         predictions : [BATCH, SEQLEN, NUMITEMS (probabilities)]
-        sequence_lengths : [BATCH,]
         """
         predictions = predictions.reshape(-1, self.num_items)
         targets = targets.reshape(-1)
-        mask = targets != self.padding_idx
+        # mask = targets != self.padding_idx
+        mask = inputs.reshape(-1) == self.masking_token
         self.recall.append(self.get_recall(predictions[mask], targets[mask]))
         self.mrr.append(self.get_mrr(predictions[mask], targets[mask]))
-
 
     def get_recall(self, predictions, targets):
         recalls = []
@@ -44,7 +41,6 @@ class Evaluator(object):
             recalls.append(recall)
         return recalls
 
-
     def get_mrr(self, predictions, targets):
         mrrs = []
         for k in self.k_list:
@@ -58,7 +54,6 @@ class Evaluator(object):
             mrr = torch.sum(reciprocal_ranks).item() / targets_exp.size(0)
             mrrs.append(mrr)
         return mrrs
-
 
     def get_stats(self):
         eval_result = "\nEvaluation Results"

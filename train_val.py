@@ -6,6 +6,13 @@ import time
 import progressbar
 
 
+def calc_cloze_loss(inputs, targets, predictions, loss_fn, mask_token):
+  predictions = predictions.reshape(predictions.size(0)*predictions.size(1), -1) # [SEQ LEN * BATCH, NUM ITEMS]
+  targets = targets.reshape(-1) # [BATCH * SEQ LEN]
+  mask = inputs.reshape(-1) == mask_token
+  return loss_fn(predictions[mask], targets[mask])
+
+
 def train_loop(model, opt, loss_fn, dataset):
     model.train()
     losses = []
@@ -16,18 +23,16 @@ def train_loop(model, opt, loss_fn, dataset):
     bar = progressbar.ProgressBar(max_value=num_batches)
 
     while True:
-        batch_users, X, y, target_key_mask, target_mask, cur_sess_len, hist_sess, hist_sess_key_mask, hist_sizes, friend_sess, friend_sess_key_mask, friend_sizes\
-            = dataset.get_next_train_batch()
+        batch_users, cur_sess, cur_sess_targets, cur_sess_len, key_mask = dataset.get_next_train_batch()
         c_batch_size = len(batch_users)
         if c_batch_size == 0:
             break
         
-        pred = model(X, y, target_key_mask, target_mask, cur_sess_len, hist_sess, hist_sess_key_mask, hist_sizes, friend_sess, friend_sess_key_mask, friend_sizes)
-        pred = pred.permute(1, 2, 0)
-        loss = loss_fn(pred, y)
-
+        pred = model(cur_sess, cur_sess_len, key_mask) # [SEQ LEN, BATCH, NUM ITEMS]
+        loss = calc_cloze_loss(cur_sess, cur_sess_targets, pred, loss_fn, dataset.masking_item)
         opt.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 5) # Gradient Clipping
         opt.step()
         losses.append(loss.detach().item())
 
@@ -42,6 +47,34 @@ def validation_loop(model, loss_fn, evaluator, dataset):
     losses = []
     evaluator.initialize()
 
+    dataset.reset_val_batch()
+    num_batches = dataset.get_num_remain_batches()
+    batch_idx = 0
+    bar = progressbar.ProgressBar(max_value=num_batches)
+    
+    with torch.no_grad():
+        while True:
+            batch_users, cur_sess, cur_sess_targets, cur_sess_len, key_mask = dataset.get_next_val_batch()
+            c_batch_size = len(batch_users)
+            if c_batch_size == 0:
+                break
+
+            pred = model(cur_sess, cur_sess_len, key_mask) # [SEQ LEN, BATCH, NUM ITEMS]
+            loss = calc_cloze_loss(cur_sess, cur_sess_targets, pred, loss_fn, dataset.masking_item)
+            losses.append(loss.detach().item())
+            evaluator.evaluate_batch(cur_sess, cur_sess_targets, pred.permute(1, 0, 2))
+
+            bar.update(batch_idx)
+            batch_idx += 1
+
+    return np.mean(losses), evaluator.get_stats()
+
+
+def test_loop(model, loss_fn, evaluator, dataset):
+    model.eval()
+    losses = []
+    evaluator.initialize()
+
     dataset.reset_test_batch()
     num_batches = dataset.get_num_remain_batches()
     batch_idx = 0
@@ -49,20 +82,15 @@ def validation_loop(model, loss_fn, evaluator, dataset):
     
     with torch.no_grad():
         while True:
-            batch_users, X, y, target_key_mask, target_mask, cur_sess_len, hist_sess, hist_sess_key_mask, hist_sizes, friend_sess, friend_sess_key_mask, friend_sizes\
-                = dataset.get_next_test_batch()
+            batch_users, cur_sess, cur_sess_targets, cur_sess_len, key_mask = dataset.get_next_test_batch()
             c_batch_size = len(batch_users)
             if c_batch_size == 0:
                 break
 
-            pred = model(X, y, target_key_mask, target_mask, cur_sess_len, hist_sess, hist_sess_key_mask, hist_sizes, friend_sess, friend_sess_key_mask, friend_sizes)
-            pred = pred.permute(1, 2, 0)
-
-            loss = loss_fn(pred, y)
+            pred = model(cur_sess, cur_sess_len, key_mask) # [SEQ LEN, BATCH, NUM ITEMS]
+            loss = calc_cloze_loss(cur_sess, cur_sess_targets, pred, loss_fn, dataset.masking_item)
             losses.append(loss.detach().item())
-
-            pred = pred.permute(0, 2, 1)
-            evaluator.evaluate_batch(pred, y)
+            evaluator.evaluate_batch(cur_sess, cur_sess_targets, pred.permute(1, 0, 2))
 
             bar.update(batch_idx)
             batch_idx += 1
@@ -104,3 +132,10 @@ def fit(model, opt, loss_fn, evaluator, dataset, epochs=5, checkpoints=True, che
         
         if scheduler is not None:
             scheduler.step(eval_loss)
+
+
+def test(model, loss_fn, evaluator, dataset):
+  print("Testing Model")
+  test_loss, test_results = test_loop(model, loss_fn, evaluator, dataset)
+  print(test_results)
+  print(f"Test loss: {test_loss:.4f}")
