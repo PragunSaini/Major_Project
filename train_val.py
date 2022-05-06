@@ -4,6 +4,7 @@ import torch.optim as optim
 import numpy as np
 import time
 import progressbar
+from model import load_model_checkpoint
 
 
 def calc_cloze_loss(inputs, targets, predictions, loss_fn, mask_token):
@@ -98,7 +99,14 @@ def test_loop(model, loss_fn, evaluator, dataset):
     return np.mean(losses), evaluator.get_stats()
 
 
-def fit(model, opt, loss_fn, evaluator, dataset, epochs=5, checkpoints=True, checkpoint_name="", resume_from_checkpoint=None, scheduler=None):
+def test(model, loss_fn, evaluator, dataset):
+  print("Testing Model")
+  test_loss, test_results = test_loop(model, loss_fn, evaluator, dataset)
+  print(test_results)
+  print(f"Test loss: {test_loss:.4f}")
+
+
+def fit(model, opt, loss_fn, evaluator, dataset, epochs=5, checkpoints=True, checkpoint_name="", resume_from_checkpoint=None, scheduler=None, testonly=False):
     resume_from_epoch = 0
     if resume_from_checkpoint != None:
         checkpoint = torch.load(resume_from_checkpoint)
@@ -106,36 +114,49 @@ def fit(model, opt, loss_fn, evaluator, dataset, epochs=5, checkpoints=True, che
         opt.load_state_dict(checkpoint['optimizer_state_dict'])
         resume_from_epoch = checkpoint['epoch']
 
-    print("Training model and Validating Model")
+    if not testonly:
+        print("Training model and Validating Model")
 
-    for epoch in range(resume_from_epoch, epochs):
-        print("-"*25, f"Epoch {epoch}","-"*25)
-    
-        train_loss = train_loop(model, opt, loss_fn, dataset)
-        print(f"\nTraining loss: {train_loss:.4f}\n")
-
-        eval_loss, eval_results = validation_loop(model, loss_fn, evaluator, dataset)
-        print(eval_results)
-        print(f"Validation loss: {eval_loss:.4f}")
-
-        if checkpoints:
-            checkpoint_path = f"checkpoints/{checkpoint_name}_{time.strftime('%Y-%m-%d-%H:%M:%S')}"
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': opt.state_dict(),
-                'train_loss': train_loss,
-                'eval_loss': eval_loss,
-                'eval_results': eval_results
-            }, checkpoint_path)
-            print(f"\nModel at Epoch {epoch} saved at {checkpoint_path}\n\n")
+        for epoch in range(resume_from_epoch, epochs):
+            print("-"*25, f"Epoch {epoch}","-"*25)
         
-        if scheduler is not None:
-            scheduler.step(eval_loss)
+            train_loss = train_loop(model, opt, loss_fn, dataset)
+            print(f"\nTraining loss: {train_loss:.4f}\n")
+
+            eval_loss, eval_results = validation_loop(model, loss_fn, evaluator, dataset)
+            print(eval_results)
+            print(f"Validation loss: {eval_loss:.4f}")
+
+            if checkpoints:
+                checkpoint_path = f"checkpoints/{checkpoint_name}_{time.strftime('%Y-%m-%d-%H:%M:%S')}"
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': opt.state_dict(),
+                    'train_loss': train_loss,
+                    'eval_loss': eval_loss,
+                    'eval_results': eval_results
+                }, checkpoint_path)
+                print(f"\nModel at Epoch {epoch} saved at {checkpoint_path}\n\n")
+            
+            if scheduler is not None:
+                scheduler.step(eval_loss)
+
+    test(model, loss_fn, evaluator, dataset)
 
 
-def test(model, loss_fn, evaluator, dataset):
-  print("Testing Model")
-  test_loss, test_results = test_loop(model, loss_fn, evaluator, dataset)
-  print(test_results)
-  print(f"Test loss: {test_loss:.4f}")
+def predict(items, model, dataset, model_checkpoint, k=10):
+    model = load_model_checkpoint(model, model_checkpoint)
+    items.append(dataset.masking_item)
+    sess, sesslens, mask = dataset.generate_prediction_data(items)
+    target_mask = sess == dataset.masking_item
+    with torch.no_grad():
+        pred = model(sess, sesslens, mask)
+        pred = pred.permute(1, 0, 2)
+        pred = pred[target_mask]
+    result = pred[0]
+    result = torch.topk(result, k+10)[1]
+    dup_mask = torch.vstack([result != i for i in items]).prod(0).bool()
+    result = result[dup_mask][:k]
+    result = dataset.item_to_name(result)
+    print(result)

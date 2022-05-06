@@ -2,6 +2,7 @@ import pickle
 import time
 import math
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 from collections import defaultdict
@@ -22,6 +23,13 @@ class DataHandler():
         trainset, train_session_lengths = dataset['train'], dataset['train_lens']
         valset, val_session_lengths = dataset['val'], dataset['val_lens']
         testset, test_session_lengths = dataset['test'], dataset['test_lens']
+
+        self.item_name_map = dataset['item_name_mapping']
+        self.item_index_map = dataset['item_index_mapping']
+        self.item_index_map = dict((v,k) for k,v in self.item_index_map.items())
+        self.item_name_map = dict((v,k) for k,v in self.item_name_map.items())
+        if type(self.item_index_map) == dict:
+            self.item_name_map = pd.Series(self.item_name_map)
 
         user_set = set(trainset.keys())
         self.num_users = len(trainset)
@@ -184,3 +192,13 @@ class DataHandler():
 
     def create_pad_mask_by_len(self, matrix, seq_len):
         return torch.arange(matrix.size(1)).repeat(matrix.size(0), 1) >= seq_len.unsqueeze(1)
+        
+    def generate_prediction_data(self, items):
+        sess = torch.tensor(items).unsqueeze(0)
+        sesslens = torch.tensor([len(items)])
+        mask =  self.create_pad_mask_by_len(sess, sesslens)
+        return sess.to(self.device), sesslens.to(self.device), mask.to(self.device)
+
+    def item_to_name(self, items):
+        items = [self.item_index_map[x.item()] for x in items]
+        return self.item_name_map.loc[items]

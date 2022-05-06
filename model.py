@@ -51,7 +51,6 @@ class Transformer4Rec(nn.Module):
         return out
 
 
-
 class PositionalEncoding(nn.Module):
     def __init__(self, dim_model, dropout=0.1, max_len=20):
         super(PositionalEncoding, self).__init__()
@@ -67,3 +66,9 @@ class PositionalEncoding(nn.Module):
     def forward(self, x):
         x = x + self.pe[:x.size(0)]
         return self.dropout(x)
+
+
+def load_model_checkpoint(model, checkpoint):
+    checkpoint = torch.load(checkpoint)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    return model
